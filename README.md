@@ -2,7 +2,13 @@
 
 ## Summary
 
-**Nest-AI-adaptive-video-stream** is a high-performance, closed-loop video orchestration engine designed to maximize Quality of Experience (QoE) and protect advertising inventory (SSAI/CSAI). The system bridges real-time HLS.js telemetry with a deterministic AI agent (LangGraph) to autonomously diagnose and mitigate network or media delivery failures in real-time.
+- Sensor Layer (Frontend): A React component using useRef to manage the hls.js instance without triggering unnecessary re-renders, emitting metrics like bufferLength, bandwidth, and latency.
+
+- Ingestion Layer (Backend): A NestJS Gateway that receives metrics and applies a gate of 15–30 seconds to stay within the 15 RPM limit of the Gemini free tier.
+
+- Orchestration Layer (LangGraph): A stateful graph that maintains a sliding window (History) of the last 5 metrics to identify negative health trends.
+
+- Actuator Logic: A deterministic node that translates AI reasoning into actionable player commands like TUNE_ABR to prevent a Stall.
 
 ## Architecture
 
