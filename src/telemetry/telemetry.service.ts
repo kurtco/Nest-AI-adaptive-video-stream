@@ -16,7 +16,8 @@ import { HlsMetricsDto } from './dto/hls-metrics.dto';
 const GraphState = Annotation.Root({
   metrics: Annotation<HlsMetricsDto>(),
 
-  // The reducer allows us to maintain a sliding window of telemetry
+  // Reducer: agrega los datos nuevos al historial y mantiene solo los
+  // últimos 5 registros para analizar tendencias y limpiar lo antiguo.
   history: Annotation<HlsMetricsDto[]>({
     reducer: (prev, next) => {
       const updated = [...(prev || []), ...next];
@@ -31,25 +32,26 @@ const GraphState = Annotation.Root({
 
 // STAFF TIP: Extract both State and Update types from the Root Annotation
 type GraphStateType = typeof GraphState.State;
-type GraphUpdateType = typeof GraphState.Update; // FIX: This includes OverwriteValue support
-
+type GraphUpdateType = typeof GraphState.Update;
 @Injectable()
 export class TelemetryService implements OnModuleInit {
   private model: ChatGoogleGenerativeAI;
 
   // FIX: Using GraphUpdateType instead of Partial<GraphStateType>
-  private graph: CompiledStateGraph<GraphStateType, GraphUpdateType, string>;
-
+  private graph!: CompiledStateGraph<GraphStateType, GraphUpdateType, string>;
+  private lastAiCallTimestamp: number = 0;
+  private lastProcessedBuffer: number = 0;
+  private readonly COOLDOWN_MS = 20000; // seconds between calls by FE
   constructor(private readonly configService: ConfigService) {
     const apiKey = this.configService.get<string>('GOOGLE_GENAI_API_KEY');
 
     if (!apiKey) {
       throw new Error('GOOGLE_GENAI_API_KEY missing in .env');
     }
-
+    // model list available here https://generativelanguage.googleapis.com/v1beta/models?key=YOUR_API_KEY
     this.model = new ChatGoogleGenerativeAI({
       apiKey,
-      model: 'gemini-1.5-flash',
+      model: 'gemini-2.5-flash',
       maxOutputTokens: 512,
     });
   }
@@ -124,11 +126,36 @@ export class TelemetryService implements OnModuleInit {
   }
 
   async processMetrics(metrics: HlsMetricsDto): Promise<unknown> {
+    const now = Date.now();
+    const timeSinceLastCall = now - this.lastAiCallTimestamp;
+
+    // 1. GATE DE TIEMPO (Sin logs repetitivos para no ensuciar la terminal)
+    if (timeSinceLastCall < this.COOLDOWN_MS) {
+      return null;
+    }
+
+    // 2. FILTRO DE RELEVANCIA REAL
+    // En 3G el buffer oscila mucho; solo procesamos si cae de 5s o si es un evento de red
+    const isCritical = metrics.bufferLength < 5;
+    const isNetworkEvent = metrics.eventType !== 'HEARTBEAT';
+
+    if (!isCritical && !isNetworkEvent) {
+      return null;
+    }
+
     try {
+      // 3. BLOQUEO INMEDIATO
+      this.lastAiCallTimestamp = now;
+      console.log(`🤖 Llamando a Gemini... (Buffer: ${metrics.bufferLength}s)`);
+
       const result = await this.graph.invoke({ metrics });
+
+      console.log('✅ IA Respuesta:', result.analysis);
       return result.decision;
     } catch (error) {
-      console.error('LangGraph workflow execution failed:', error);
+      // ERROR: No pongas lastAiCallTimestamp = 0 aquí.
+      // Si Google te da 429, hay que esperar el COOLDOWN completo.
+      console.error('❌ Error de Cuota/IA:', error);
       return null;
     }
   }
